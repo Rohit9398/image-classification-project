@@ -31,3 +31,4 @@ data/
 output/*
 !output/best_model.pkl
 !output/scaler.pkl
+!output/base_samples.pkl

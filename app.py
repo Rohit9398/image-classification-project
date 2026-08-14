@@ -89,12 +89,78 @@ else:
         
         # Display what the AI actually "sees"
         st.write("---")
-        st.write("### 👁️ What the AI actually sees:")
-        st.write("The AI squishes your image down to a 28x28 grayscale square. If the background isn't completely plain, or if the shape gets distorted, it gets confused!")
+        col1, col2 = st.columns([1, 2])
         
-        # We need to scale the processed image back to 0-255 for display
-        display_img = (processed_img * 255).astype(np.uint8) if processed_img.max() <= 1.0 else processed_img.astype(np.uint8)
-        display_img = cv2.resize(display_img, (150, 150), interpolation=cv2.INTER_NEAREST)
-        st.image(display_img, caption="28x28 Processed Vision", width=150)
-        
-        st.balloons()
+        with col1:
+            st.write("### 👁️ AI Vision (28x28):")
+            display_img = (processed_img * 255).astype(np.uint8) if processed_img.max() <= 1.0 else processed_img.astype(np.uint8)
+            display_img = cv2.resize(display_img, (150, 150), interpolation=cv2.INTER_NEAREST)
+            st.image(display_img, caption="What AI sees", width=150)
+            
+        with col2:
+            st.write("### 💡 Is this prediction correct?")
+            file_key = getattr(uploaded_file, 'name', 'camera_img') if uploaded_file else 'camera_img'
+            feedback = st.radio(
+                "Feedback:",
+                ["Yes, correct! 👍", "No, correct prediction ✏️"],
+                key=f"fb_radio_{file_key}"
+            )
+            
+            if feedback == "Yes, correct! 👍":
+                st.balloons()
+            else:
+                correct_class = st.selectbox(
+                    "Select correct label:",
+                    CLASS_NAMES,
+                    index=int(prediction[0]),
+                    key=f"fb_select_{file_key}"
+                )
+                
+                if st.button("💾 Save Feedback & Update Model", key=f"fb_btn_{file_key}"):
+                    with st.spinner("Teaching the AI your correct label..."):
+                        correct_idx = CLASS_NAMES.index(correct_class)
+                        
+                        # 1. Save feedback image for dataset collection
+                        fb_dir = os.path.join(OUTPUT_DIR, 'feedback_data', correct_class)
+                        os.makedirs(fb_dir, exist_ok=True)
+                        import time
+                        ts = int(time.time())
+                        input_image.save(os.path.join(fb_dir, f"feedback_{ts}.png"))
+                        
+                        # 2. Store & Boost feedback features
+                        fb_feat_path = os.path.join(OUTPUT_DIR, 'feedback_features.pkl')
+                        if os.path.exists(fb_feat_path):
+                            fb_data = joblib.load(fb_feat_path)
+                            X_fb = np.vstack([fb_data['X'], combined_scaled])
+                            y_fb = np.append(fb_data['y'], correct_idx)
+                        else:
+                            X_fb = combined_scaled
+                            y_fb = np.array([correct_idx])
+                            
+                        joblib.dump({'X': X_fb, 'y': y_fb}, fb_feat_path)
+                        
+                        # 3. Update model with weight boosting
+                        # Mix feedback samples with base sample dataset for balanced multi-class retraining
+                        X_boosted = np.repeat(X_fb, 25, axis=0)
+                        y_boosted = np.repeat(y_fb, 25, axis=0)
+                        
+                        base_sample_path = os.path.join(OUTPUT_DIR, 'base_samples.pkl')
+                        if os.path.exists(base_sample_path):
+                            base_data = joblib.load(base_sample_path)
+                            X_train_mix = np.vstack([base_data['X'], X_boosted])
+                            y_train_mix = np.append(base_data['y'], y_boosted)
+                        else:
+                            X_train_mix = X_boosted
+                            y_train_mix = y_boosted
+                        
+                        # Retrain model on feedback boosted samples
+                        try:
+                            if hasattr(model, 'fit'):
+                                model.fit(X_train_mix, y_train_mix)
+                                joblib.dump(model, MODEL_PATH)
+                                st.cache_resource.clear()
+                                st.success(f"✅ Success! AI has learned that this image is a **{correct_class}**.")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating model: {e}")
+
